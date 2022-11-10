@@ -1,0 +1,154 @@
+pipeline {
+    agent any
+    stages {
+        stage("Checkout") {
+			steps {
+				checkout scm
+			}
+        }
+		stage("Build"){
+			steps {
+			   echo "Execution of Build step goes here if required"
+			}
+		}
+		stage("Unit tests"){
+			steps {
+			   echo "Execution of automated unit tests"
+			}
+		}
+		stage("codequality"){
+		    steps {
+				echo "execute the code quality stage here"
+			}
+		}
+        stage("Package"){
+			steps {
+				// creating the zip file of the complete python folder can include/exclude files if required
+				sh "zip -r python.zip python"
+			}
+        }
+		stage("Publish"){
+		   steps{
+				  script{
+				        if (env.BRANCH_NAME.startsWith("feature/*") || env.BRANCH_NAME.startsWith("hotfix/*")){
+							// install artifactory plugin and configure the credentials of artifactory using the credentials plugin
+							def server = Artifactory.newServer url: "http://localhost:8081/artifactory", credentialsId: "artifactory"
+									sh "pwd"
+									def uploadSpec =
+									 """{
+									  "files": [
+										   {
+											 "pattern": "*.zip",
+											 "target": "example-repo-snapshot/"
+										   }
+										 ]
+										}"""
+
+										def buildInfo = server.upload spec: uploadSpec
+										server.publishBuildInfo buildInfo
+							} 
+							else if (env.BRANCH_NAME.startsWith("release/*")  || (env.BRANCH_NAME == "master")){
+								def server = Artifactory.newServer url: "http://localhost:8081/artifactory", credentialsId: "artifactory"
+									def uploadSpec =
+									 """{
+									  "files": [
+										   {
+											 "pattern": "*.zip",
+											 "target": "example-repo-release/<release-version>"
+										   }
+										 ]
+										}"""
+
+										def buildInfo = server.upload spec: uploadSpec
+										server.publishBuildInfo buildInfo
+							}
+							else {
+							    print("Skip artifacts to publish")
+							}     
+						}
+     	        }
+		}
+        stage("Deploy"){
+				steps{
+				    script{
+					withCredentials([usernamePassword(credentialsId: 'Ec2Creds', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+							def remote = [:]
+							remote.name = 'test'
+							remote.host = 'test.domain.com'
+							remote.user = "$USERNAME"
+							remote.password = "$PASSWORD"
+							remote.allowAnyHosts = true
+				            if (env.BRANCH_NAME.startsWith("release/*")){
+								stage('Remote SSH') {
+								  writeFile file: 'deploy.sh', text: 'ls -lrt'
+								  sshScript remote: remote, script: "deploy.sh"
+								}
+							} else if  (env.BRANCH_NAME == "master"){
+									def url = "https://service-now-request.com/id=1234"
+									def change_request_status=sh(script: "curl -s $url", returnStdout: true).trim()
+									if (change_request_status == 200 && change_request_status["approval_status"] == "Approved"){
+										stage('Remote SSH') {
+										  writeFile file: 'deploy.sh', text: 'ls -lrt'
+										  sshScript remote: remote, script: "deploy.sh"
+										}
+									}
+							}
+						}
+					}
+					post {
+						always {
+						  script {
+						      if (env.BRANCH_NAME.startsWith("release/*"){
+									emailext body: 'Current deployment status is ${currentBuild.result} ',
+									recipientProviders: [[$class: 'RequesterRecipientProvider'], [$class:'CulpritsRecipientProvider']],
+									subject: 'Deployment Status',
+									to: 'DLTeam@example.com'
+								} else if(env.BRANCH_NAME == "master"){
+								    mailext body: 'Current deployment status is ${currentBuild.result} ',
+									recipientProviders: [[$class: 'RequesterRecipientProvider'], [$class:'CulpritsRecipientProvider']],
+									subject: 'Deployment Status',
+									to: 'DLEng@example.com'
+								}
+							}
+						}
+				}						
+		}
+		
+		stage("Post Deploy Tests"){
+			steps{
+				    script{
+						if (env.BRANCH_NAME.startsWith("release/*")){
+							stage('SMOKE and UAT Tests') {
+								 print("Execution of smoke and uat tests goes here")
+							}		
+						} else if(env.BRANCH_NAME == "master"){
+							stage('Release Tests') {
+								 print("Execution of release tests goes here")
+							}
+						}
+					}
+					post {
+						always {
+						  script {
+									emailext body: 'Current test results status is ${currentBuild.result} ',
+									recipientProviders: [[$class: 'RequesterRecipientProvider'], [$class:'CulpritsRecipientProvider']],
+									subject: 'Test result Status',
+									to: 'QATeam@example.com'
+								}
+						}
+					}	
+				}
+			}
+ 
+        stage("Email Notifications"){
+           steps{
+			   script{
+                   emailext body: 'Current test results status is ${currentBuild.result}  from branch ${env.BRANCH_NAME} and Commit Hash ${env.COMMIT_ID}',
+                    recipientProviders: [[$class: 'RequesterRecipientProvider'], [$class:'CulpritsRecipientProvider']],
+                    subject: 'Test result Status',
+                    to: 'DLTeam@example.com'
+			   }
+		   }
+        }
+    }
+}
